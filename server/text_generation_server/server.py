@@ -22,16 +22,17 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         self.model = model
         self.server_urls = server_urls
         # For some reason, inference_mode does not work well with GLOO which we use on CPU
-        if model.device.type == "cuda":
+        if model.device.type == "hpu":
             # Force inference mode for the lifetime of TextGenerationService
             self._inference_mode_raii_guard = torch._C._InferenceMode(True)
+            print("INFERNCE MOOOOOODE")
 
     async def Info(self, request, context):
         return self.model.info
 
     async def Health(self, request, context):
-        if self.model.device.type == "cuda":
-            torch.zeros((2, 2)).cuda()
+        if self.model.device.type == "hpu":
+            torch.zeros((2, 2)).to("hpu")
         return generate_pb2.HealthResponse()
 
     async def ServiceDiscovery(self, request, context):

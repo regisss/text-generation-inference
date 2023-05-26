@@ -21,7 +21,7 @@ class Model(ABC):
         rank: int = 0,
         world_size: int = 1,
     ):
-        self.model = model.eval()
+        self.model = model
         self.tokenizer = tokenizer
         self.all_special_ids = set(tokenizer.all_special_ids)
         self.requires_padding = requires_padding

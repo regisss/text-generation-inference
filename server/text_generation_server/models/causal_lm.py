@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from opentelemetry import trace
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerBase
 from typing import Optional, Tuple, List, Type, Dict
+from habana_frameworks.torch.hpu import wrap_in_hpu_graph
+
+from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
 
 from text_generation_server.models import Model
 from text_generation_server.models.types import (
@@ -452,38 +455,25 @@ class CausalLM(Model):
         self,
         model_id: str,
         revision: Optional[str] = None,
-        quantize: Optional[str] = None,
-        trust_remote_code: bool = False,
     ):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.float16
-        else:
-            if quantize:
-                raise ValueError("quantization is not available on CPU")
+        device = torch.device("hpu")
+        dtype = torch.bfloat16
 
-            device = torch.device("cpu")
-            dtype = torch.float32
+        adapt_transformers_to_gaudi()
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
             revision=revision,
             padding_side="left",
             truncation_side="left",
-            trust_remote_code=trust_remote_code,
         )
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             revision=revision,
             torch_dtype=dtype,
-            device_map="auto"
-            if torch.cuda.is_available() and torch.cuda.device_count() > 1
-            else None,
-            load_in_8bit=quantize == "bitsandbytes",
-            trust_remote_code=trust_remote_code,
         )
-        if torch.cuda.is_available() and torch.cuda.device_count() == 1:
-            model = model.cuda()
+        model = model.eval().to(device)
+        model = wrap_in_hpu_graph(model)
 
         if tokenizer.pad_token_id is None:
             if model.config.pad_token_id is not None:
@@ -527,6 +517,7 @@ class CausalLM(Model):
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
+            "token_idx": None,
         }
         if self.has_position_ids:
             kwargs["position_ids"] = position_ids
