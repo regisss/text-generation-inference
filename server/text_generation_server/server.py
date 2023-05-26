@@ -98,31 +98,18 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
 def serve(
     model_id: str,
     revision: Optional[str],
-    sharded: bool,
-    quantize: Optional[str],
-    trust_remote_code: bool,
     uds_path: Path,
 ):
     async def serve_inner(
         model_id: str,
         revision: Optional[str],
-        sharded: bool = False,
-        quantize: Optional[str] = None,
-        trust_remote_code: bool = False,
     ):
         unix_socket_template = "unix://{}-{}"
-        if sharded:
-            server_urls = [
-                unix_socket_template.format(uds_path, rank)
-                for rank in range(int(os.environ["WORLD_SIZE"]))
-            ]
-            local_url = server_urls[int(os.environ["RANK"])]
-        else:
-            local_url = unix_socket_template.format(uds_path, 0)
-            server_urls = [local_url]
+        local_url = unix_socket_template.format(uds_path, 0)
+        server_urls = [local_url]
 
         try:
-            model = get_model(model_id, revision, sharded, quantize, trust_remote_code)
+            model = get_model(model_id, revision)
         except Exception:
             logger.exception("Error when initializing model")
             raise
@@ -153,4 +140,4 @@ def serve(
             logger.info("Signal received. Shutting down")
             await server.stop(0)
 
-    asyncio.run(serve_inner(model_id, revision, sharded, quantize, trust_remote_code))
+    asyncio.run(serve_inner(model_id, revision))

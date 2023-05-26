@@ -64,7 +64,7 @@ def serve(
 
     # Downgrade enum into str for easier management later on
     quantize = None if quantize is None else quantize.value
-    server.serve(model_id, revision, sharded, quantize, trust_remote_code, uds_path)
+    server.serve(model_id, revision, uds_path)
 
 
 @app.command()
