@@ -18,6 +18,7 @@ from text_generation_server.models.types import (
 )
 from text_generation_server.pb import generate_pb2
 from text_generation_server.utils import NextTokenChooser, StoppingCriteria, Sampling
+from loguru import logger
 
 tracer = trace.get_tracer(__name__)
 
@@ -508,7 +509,7 @@ class CausalLM(Model):
         )
 
     def forward(
-        self, input_ids, attention_mask, position_ids, past_key_values: Optional = None
+        self, input_ids, attention_mask, token_idx = None, past_key_values: Optional = None
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
         # Model Forward
         kwargs = {
@@ -517,10 +518,12 @@ class CausalLM(Model):
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
-            "token_idx": None,
+            "token_idx": token_idx,
         }
-        if self.has_position_ids:
-            kwargs["position_ids"] = position_ids
+        # if self.has_position_ids:
+        #     kwargs["position_ids"] = position_ids
+
+        logger.warning(f"Token idx: {token_idx}")
 
         outputs = self.model.forward(**kwargs)
         return outputs.logits, outputs.past_key_values
@@ -532,10 +535,13 @@ class CausalLM(Model):
         # slice the attention mask to the correct shape
         attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
 
+        token_idx = torch.tensor(batch.position_ids[0, -1])
+
+
         logits, past = self.forward(
             batch.input_ids,
             attention_mask,
-            batch.position_ids,
+            token_idx,
             batch.past_key_values,
         )
 
