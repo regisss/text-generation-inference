@@ -31,7 +31,7 @@ COPY launcher launcher
 RUN cargo build --release
 
 # Text Generation Inference base image
-FROM vault.habana.ai/gaudi-docker/1.9.0/ubuntu22.04/habanalabs/pytorch-installer-1.13.1:latest as base
+FROM vault.habana.ai/gaudi-docker/1.10.0/ubuntu22.04/habanalabs/pytorch-installer-2.0.1:latest as base
 
 # Text Generation Inference base env
 ENV HUGGINGFACE_HUB_CACHE=/data \
@@ -39,8 +39,8 @@ ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80
 
 # libssl.so.1.1 is not installed on Ubuntu 22.04 by default, install it
-RUN wget http://nz2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.18_amd64.deb && \
-    dpkg -i ./libssl1.1_1.1.1f-1ubuntu2.18_amd64.deb
+RUN wget http://nz2.archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb && \
+    dpkg -i ./libssl1.1_1.1.1f-1ubuntu2_amd64.deb
 
 WORKDIR /usr/src
 

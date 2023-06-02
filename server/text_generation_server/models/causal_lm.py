@@ -112,20 +112,20 @@ class CausalLMBatch(Batch):
 
         input_lengths = tokenized_inputs["attention_mask"].sum(1)
         max_input_length = input_lengths.max()
+        max_tokens = len(inputs) * max_input_length + max_decode_tokens
 
         input_ids = tokenized_inputs["input_ids"]
+        input_ids = torch.nn.functional.pad(input_ids, (0, max_decode_tokens), value=tokenizer.pad_token_id)
         # Allocate maximum attention_mask
         attention_mask = input_ids.new_zeros(
-            (pb.size, max_input_length + padding_right_offset)
+            (pb.size, max_input_length + max_decode_tokens)
         )
         # Copy tokenizer attention_mask into fully allocated attention_mask
         attention_mask[:, :max_input_length] = tokenized_inputs["attention_mask"]
 
         position_ids = tokenized_inputs["attention_mask"].long().cumsum(-1) - 1
         position_ids.masked_fill_(tokenized_inputs["attention_mask"] == 0, 1)
-        all_input_ids = tokenized_inputs["input_ids"].T.split(1, dim=1)
-
-        max_tokens = len(inputs) * max_input_length + max_decode_tokens
+        all_input_ids = input_ids.T.clone().split(1, dim=1)
 
         return cls(
             batch_id=pb.id,
@@ -520,10 +520,6 @@ class CausalLM(Model):
             "return_dict": True,
             "token_idx": token_idx,
         }
-        # if self.has_position_ids:
-        #     kwargs["position_ids"] = position_ids
-
-        logger.warning(f"Token idx: {token_idx}")
 
         outputs = self.model.forward(**kwargs)
         return outputs.logits, outputs.past_key_values
@@ -532,15 +528,11 @@ class CausalLM(Model):
     def generate_token(
         self, batch: CausalLMBatch
     ) -> Tuple[List[Generation], Optional[CausalLMBatch]]:
-        # slice the attention mask to the correct shape
-        attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
-
-        token_idx = torch.tensor(batch.position_ids[0, -1])
-
+        token_idx = torch.tensor(batch.position_ids[0, -1] + 1)
 
         logits, past = self.forward(
             batch.input_ids,
-            attention_mask,
+            batch.attention_mask,
             token_idx,
             batch.past_key_values,
         )
@@ -578,7 +570,7 @@ class CausalLM(Model):
             )
 
             # Append next token to all tokens
-            all_input_ids = torch.cat([all_input_ids, next_token_id])
+            all_input_ids[token_idx] = next_token_id
             new_input_length = input_length + 1
 
             # Generated token
