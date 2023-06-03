@@ -16,8 +16,30 @@
 
 </div>
 
-A Rust, Python and gRPC server for text generation inference. Used in production at [HuggingFace](https://huggingface.co) 
+A Rust, Python and gRPC server for text generation inference. Used in production at [HuggingFace](https://huggingface.co)
 to power LLMs api-inference widgets.
+
+
+## TGI on Habana Gaudi
+
+To use text-generation-inference on Gaudi/Gaudi2, follow these steps:
+
+- Build the Docker image with:
+  ```bash
+  docker build -t tgi_gaudi .
+  ```
+- Launch a local server instance with:
+  ```bash
+  docker run -p 8080:80 -v /home/ubuntu/workspace/text-generation-inference/data_test/:/data --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --ipc=host tgi_gaudi --model-id bigscience/bloom-560m --sharded false
+  ```
+- You can then send a request:
+  ```bash
+  curl 127.0.0.1:8080/generate \
+    -X POST \
+    -d '{"inputs":"What is Deep Learning?","parameters":{"max_new_tokens":17, "do_sample": true}}' \
+    -H 'Content-Type: application/json'
+  ```
+
 
 ## Table of contents
 
@@ -171,7 +193,7 @@ Python 3.9, e.g. using `conda`:
 ```shell
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-conda create -n text-generation-inference python=3.9 
+conda create -n text-generation-inference python=3.9
 conda activate text-generation-inference
 ```
 
@@ -208,7 +230,7 @@ sudo apt-get install libssl-dev gcc -y
 
 ### CUDA Kernels
 
-The custom CUDA kernels are only tested on NVIDIA A100s. If you have any installation or runtime issues, you can remove 
+The custom CUDA kernels are only tested on NVIDIA A100s. If you have any installation or runtime issues, you can remove
 the kernels by using the `BUILD_EXTENSIONS=False` environment variable.
 
 Be aware that the official Docker image has them enabled by default.

@@ -20,10 +20,11 @@ from text_generation_server.utils.watermark import WatermarkLogitsProcessor
 class Sampling:
     def __init__(self, seed: int, device: str = "cpu"):
         torch.manual_seed(seed)
+        self.seed = seed
 
     def __call__(self, logits):
         probs = torch.nn.functional.softmax(logits, -1)
-        return torch.multinomial(probs, num_samples=1).squeeze(1)
+        return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
 class Greedy:
