@@ -526,8 +526,10 @@ class CausalLM(Model):
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
-            "token_idx": token_idx,
         }
+
+        if self.is_optimized_for_gaudi:
+            kwargs["token_idx"] = token_idx
 
         outputs = self.model.forward(**kwargs)
         return outputs.logits, outputs.past_key_values
