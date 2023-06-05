@@ -540,12 +540,15 @@ class CausalLM(Model):
     ) -> Tuple[List[Generation], Optional[CausalLMBatch]]:
         if self.is_optimized_for_gaudi:
             token_idx = torch.tensor(batch.position_ids[0, -1] + 1)
+            attention_mask = batch.attention_mask
         else:
             token_idx = None
+            # slice the attention mask to the correct shape
+            attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
 
         logits, past = self.forward(
             batch.input_ids,
-            batch.attention_mask,
+            attention_mask,
             token_idx,
             batch.past_key_values,
         )
