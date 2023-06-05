@@ -40,6 +40,8 @@ To use text-generation-inference on Gaudi/Gaudi2, follow these steps:
     -H 'Content-Type: application/json'
   ```
 
+> For gated models such as [StarCoder](https://huggingface.co/bigcode/starcoder), you will have to pass `-e HUGGING_FACE_HUB_TOKEN=<token>` to the `docker run` command above with a valid Hugging Face Hub read token.
+
 
 ## Table of contents
 

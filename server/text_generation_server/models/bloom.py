@@ -16,9 +16,10 @@ class BloomCausalLMBatch(CausalLMBatch):
         pb: generate_pb2.Batch,
         tokenizer: PreTrainedTokenizerBase,
         device: torch.device,
+        is_optimized_for_gaudi: bool = False,
     ) -> "CausalLMBatch":
         batch = super(BloomCausalLMBatch, cls).from_pb(
-            pb=pb, tokenizer=tokenizer, device=device
+            pb=pb, tokenizer=tokenizer, device=device, is_optimized_for_gaudi=is_optimized_for_gaudi,
         )
         batch.keys_head_dim_last = False
         return batch

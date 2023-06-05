@@ -71,6 +71,7 @@ class CausalLMBatch(Batch):
         pb: generate_pb2.Batch,
         tokenizer: PreTrainedTokenizerBase,
         device: torch.device,
+        is_optimized_for_gaudi: bool = False,
     ) -> "CausalLMBatch":
         inputs = []
         next_token_choosers = []
@@ -115,7 +116,8 @@ class CausalLMBatch(Batch):
         max_tokens = len(inputs) * max_input_length + max_decode_tokens
 
         input_ids = tokenized_inputs["input_ids"]
-        input_ids = torch.nn.functional.pad(input_ids, (0, max_decode_tokens), value=tokenizer.pad_token_id)
+        if is_optimized_for_gaudi:
+            input_ids = torch.nn.functional.pad(input_ids, (0, max_decode_tokens), value=tokenizer.pad_token_id)
         # Allocate maximum attention_mask
         attention_mask = input_ids.new_zeros(
             (pb.size, max_input_length + max_decode_tokens)
@@ -473,6 +475,12 @@ class CausalLM(Model):
             revision=revision,
             torch_dtype=dtype,
         )
+
+        if model.config.model_type in ["bloom", "gpt2", "gptj", "gpt_neox", "opt"]:
+            self.is_optimized_for_gaudi = True
+        else:
+            self.is_optimized_for_gaudi = False
+
         model = model.eval().to(device)
         model = wrap_in_hpu_graph(model)
 
@@ -528,7 +536,10 @@ class CausalLM(Model):
     def generate_token(
         self, batch: CausalLMBatch
     ) -> Tuple[List[Generation], Optional[CausalLMBatch]]:
-        token_idx = torch.tensor(batch.position_ids[0, -1] + 1)
+        if self.is_optimized_for_gaudi:
+            token_idx = torch.tensor(batch.position_ids[0, -1] + 1)
+        else:
+            token_idx = None
 
         logits, past = self.forward(
             batch.input_ids,
@@ -570,7 +581,10 @@ class CausalLM(Model):
             )
 
             # Append next token to all tokens
-            all_input_ids[token_idx] = next_token_id
+            if self.is_optimized_for_gaudi:
+                all_input_ids[token_idx] = next_token_id
+            else:
+                all_input_ids = torch.cat([all_input_ids, next_token_id])
             new_input_length = input_length + 1
 
             # Generated token
