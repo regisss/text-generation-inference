@@ -11,15 +11,6 @@ from text_generation_server.models.bloom import BLOOM
 from text_generation_server.models.santacoder import SantaCoder
 
 
-__all__ = [
-    "Model",
-    "BLOOM",
-    "CausalLM",
-    "SantaCoder",
-    "get_model",
-]
-
-
 # Disable gradients
 torch.set_grad_enabled(False)
 
