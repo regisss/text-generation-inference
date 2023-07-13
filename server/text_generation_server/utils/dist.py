@@ -2,12 +2,13 @@ import os
 import torch
 
 from datetime import timedelta
+import habana_frameworks.torch.core as htcore
 
 
 def initialize_torch_distributed():
     rank = int(os.getenv("RANK", "0"))
     world_size = int(os.getenv("WORLD_SIZE", "1"))
-
+    options = None
     if torch.cuda.is_available():
         from torch.distributed import ProcessGroupNCCL
 
@@ -19,9 +20,11 @@ def initialize_torch_distributed():
         options = ProcessGroupNCCL.Options()
         options.is_high_priority_stream = True
         options._timeout = timedelta(seconds=60)
+    elif torch.hpu.is_available():
+        backend = "hccl"
+        assert world_size <= torch.hpu.device_count(), "Each process is one hpu"
     else:
         backend = "gloo"
-        options = None
 
     # Call the init process.
     torch.distributed.init_process_group(
