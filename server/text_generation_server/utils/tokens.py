@@ -1,5 +1,6 @@
 import re
 import torch
+import habana_frameworks.torch.core as htcore
 
 from functools import lru_cache
 from transformers import (
