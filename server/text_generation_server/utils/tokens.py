@@ -60,9 +60,9 @@ class StaticWarper:
     def __call__(self, scores):
         if self.cuda_graph is None:
             self.static_scores = scores
-            self.cuda_graph = torch.cuda.CUDAGraph()
+            self.hpu_graph = htcore.hpu.HPUGraph()
 
-            with torch.cuda.graph(self.cuda_graph):
+            with htcore.hpu.graph(self.hpu_graph):
                 for warper in self.warpers:
                     self.static_warped_scores = warper(None, self.static_scores)
 
@@ -72,7 +72,8 @@ class StaticWarper:
                 )
 
         self.static_scores.copy_(scores)
-        self.cuda_graph.replay()
+        self.hpu_graph.replay()
+
 
         return self.static_warped_scores, self.static_next_logprob
 
