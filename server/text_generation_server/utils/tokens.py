@@ -53,13 +53,13 @@ class StaticWarper:
         if typical_p is not None and typical_p < 1.0:
             self.warpers.append(TypicalLogitsWarper(mass=typical_p))
 
-        self.cuda_graph = None
+        self.hpu_graph = None
         self.static_scores = None
         self.static_warped_scores = None
         self.static_next_logprob = None
 
     def __call__(self, scores):
-        if self.cuda_graph is None:
+        if self.hpu_graph is None:
             self.static_scores = scores
             self.hpu_graph = htcore.hpu.HPUGraph()
 
