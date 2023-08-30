@@ -1,11 +1,13 @@
 from text_generation_server.utils.tokens import batch_top_tokens
 import torch
-import inspect
 
 from dataclasses import dataclass
 from opentelemetry import trace
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerBase
 from typing import Optional, Tuple, List, Type, Dict
+from habana_frameworks.torch.hpu import wrap_in_hpu_graph
+
+from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
 
 from text_generation_server.models import Model
 from text_generation_server.models.types import (
@@ -17,6 +19,7 @@ from text_generation_server.models.types import (
 )
 from text_generation_server.pb import generate_pb2
 from text_generation_server.utils import NextTokenChooser, StoppingCriteria, Sampling
+from loguru import logger
 
 tracer = trace.get_tracer(__name__)
 
@@ -72,6 +75,7 @@ class CausalLMBatch(Batch):
         tokenizer: PreTrainedTokenizerBase,
         dtype: torch.dtype,
         device: torch.device,
+        is_optimized_for_gaudi: bool = False,
     ) -> "CausalLMBatch":
         inputs = []
         next_token_choosers = []
@@ -115,23 +119,24 @@ class CausalLMBatch(Batch):
 
         input_lengths = tokenized_inputs["attention_mask"].sum(1)
         max_input_length = input_lengths.max()
+        max_tokens = len(inputs) * max_input_length + max_decode_tokens
 
         input_ids = tokenized_inputs["input_ids"]
+        if is_optimized_for_gaudi:
+            input_ids = torch.nn.functional.pad(input_ids, (0, max_decode_tokens), value=tokenizer.pad_token_id)
         # Allocate maximum attention_mask
         attention_mask = input_ids.new_zeros(
-            (pb.size, max_input_length + padding_right_offset)
+            (pb.size, max_input_length + max_decode_tokens)
         )
         # Copy tokenizer attention_mask into fully allocated attention_mask
         attention_mask[:, :max_input_length] = tokenized_inputs["attention_mask"]
 
         position_ids = tokenized_inputs["attention_mask"].long().cumsum(-1) - 1
         position_ids.masked_fill_(tokenized_inputs["attention_mask"] == 0, 1)
-        all_input_ids = tokenized_inputs["input_ids"].T.split(1, dim=1)
+        all_input_ids = input_ids.T.clone().split(1, dim=1)
         top_n_tokens_tensor = torch.tensor(
             top_n_tokens, device=device, dtype=torch.int64
         )
-
-        max_tokens = len(inputs) * (max_input_length + max_decode_tokens)
 
         return cls(
             batch_id=pb.id,
@@ -343,10 +348,7 @@ class CausalLMBatch(Batch):
                 - batch.max_input_length
                 - batch.padding_right_offset
             )
-            attention_mask[
-                start_index:end_index,
-                left_offset:-padding_right_offset,
-            ] = batch.attention_mask[
+            attention_mask[start_index:end_index, left_offset:-padding_right_offset] = batch.attention_mask[
                 :,
                 batch_left_offset : -batch.padding_right_offset,
             ]
@@ -480,39 +482,32 @@ class CausalLM(Model):
         self,
         model_id: str,
         revision: Optional[str] = None,
-        quantize: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
-        trust_remote_code: bool = False,
     ):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.float16 if dtype is None else dtype
-        else:
-            if quantize:
-                raise ValueError("quantization is not available on CPU")
+        device = torch.device("hpu")
+        dtype = torch.bfloat16 if dtype is None else dtype
 
-            device = torch.device("cpu")
-            dtype = torch.float32
+        adapt_transformers_to_gaudi()
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
             revision=revision,
             padding_side="left",
             truncation_side="left",
-            trust_remote_code=trust_remote_code,
         )
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             revision=revision,
             torch_dtype=dtype,
-            device_map="auto"
-            if torch.cuda.is_available() and torch.cuda.device_count() > 1
-            else None,
-            load_in_8bit=quantize == "bitsandbytes",
-            trust_remote_code=trust_remote_code,
         )
-        if torch.cuda.is_available() and torch.cuda.device_count() == 1:
-            model = model.cuda()
+
+        if model.config.model_type in ["bloom", "gpt2", "gptj", "gpt_neox", "opt"]:
+            self.is_optimized_for_gaudi = True
+        else:
+            self.is_optimized_for_gaudi = False
+
+        model = model.eval().to(device)
+        model = wrap_in_hpu_graph(model)
 
         if tokenizer.pad_token_id is None:
             if model.config.pad_token_id is not None:
@@ -542,7 +537,7 @@ class CausalLM(Model):
         )
 
     def forward(
-        self, input_ids, attention_mask, position_ids, past_key_values: Optional = None
+        self, input_ids, attention_mask, position_ids, token_idx = None, past_key_values: Optional = None
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
         # Model Forward
         kwargs = {
@@ -552,9 +547,16 @@ class CausalLM(Model):
             "use_cache": True,
             "return_dict": True,
         }
+
+        if self.is_optimized_for_gaudi:
+            if not past_key_values:
+                # add padding to position_id
+                position_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(attention_mask == 0, 1)
+            kwargs["token_idx"] = token_idx
+
         if self.has_position_ids:
             kwargs["position_ids"] = position_ids
-
         outputs = self.model.forward(**kwargs)
         return outputs.logits, outputs.past_key_values
 
@@ -562,13 +564,19 @@ class CausalLM(Model):
     def generate_token(
         self, batch: CausalLMBatch
     ) -> Tuple[List[Generation], Optional[CausalLMBatch]]:
-        # slice the attention mask to the correct shape
-        attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
+        if self.is_optimized_for_gaudi:
+            token_idx = torch.tensor(batch.position_ids[0, -1] + 1)
+            attention_mask = batch.attention_mask
+        else:
+            token_idx = None
+            # slice the attention mask to the correct shape
+            attention_mask = batch.attention_mask[:, : -batch.padding_right_offset]
 
         logits, past = self.forward(
             batch.input_ids,
             attention_mask,
             batch.position_ids,
+            token_idx,
             batch.past_key_values,
         )
 
@@ -617,7 +625,10 @@ class CausalLM(Model):
             )
 
             # Append next token to all tokens
-            all_input_ids = torch.cat([all_input_ids, next_token_id])
+            if self.is_optimized_for_gaudi:
+                all_input_ids[token_idx] = next_token_id
+            else:
+                all_input_ids = torch.cat([all_input_ids, next_token_id])
             new_input_length = input_length + 1
 
             # Generated token

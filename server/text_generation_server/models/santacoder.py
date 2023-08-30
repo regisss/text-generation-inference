@@ -1,8 +1,5 @@
-import torch
-import torch.distributed
-
 from typing import Optional, List
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
 from text_generation_server.models import CausalLM
 
@@ -18,28 +15,11 @@ class SantaCoder(CausalLM):
         self,
         model_id: str,
         revision: Optional[str] = None,
-        quantize: Optional[str] = None,
         dtype: Optional[torch.dtype] = None,
-        trust_remote_code: bool = False,
     ):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.float16 if dtype is None else dtype
-        else:
-            if quantize:
-                raise ValueError("quantization is not available on CPU")
+        super().__init__(model_id=model_id, revision=revision, dtype=dtype)
 
-            device = torch.device("cpu")
-            dtype = torch.float32
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
-            revision=revision,
-            padding_side="left",
-            truncation_side="left",
-            trust_remote_code=trust_remote_code,
-        )
-        tokenizer.add_special_tokens(
+        self.tokenizer.add_special_tokens(
             {
                 "additional_special_tokens": [
                     EOD,
@@ -50,22 +30,6 @@ class SantaCoder(CausalLM):
                 ],
                 "pad_token": EOD,
             }
-        )
-        with device:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                revision=revision,
-                torch_dtype=dtype,
-                load_in_8bit=quantize == "bitsandbytes",
-                trust_remote_code=trust_remote_code,
-            )
-
-        super(CausalLM, self).__init__(
-            model=model,
-            tokenizer=tokenizer,
-            requires_padding=True,
-            dtype=dtype,
-            device=device,
         )
 
     def decode(self, generated_ids: List[int]) -> str:

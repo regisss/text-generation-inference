@@ -14,7 +14,6 @@ from text_generation_server.interceptor import ExceptionInterceptor
 from text_generation_server.models import Model, get_model
 from text_generation_server.pb import generate_pb2_grpc, generate_pb2
 from text_generation_server.tracing import UDSOpenTelemetryAioServerInterceptor
-from text_generation_server.models.idefics_causal_lm import IdeficsCausalLMBatch
 
 class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
     def __init__(self, model: Model, cache: Cache, server_urls: List[str]):
@@ -22,7 +21,7 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         self.model = model
         self.server_urls = server_urls
         # For some reason, inference_mode does not work well with GLOO which we use on CPU
-        if model.device.type == "cuda":
+        if model.device.type == "hpu":
             # Force inference mode for the lifetime of TextGenerationService
             self._inference_mode_raii_guard = torch._C._InferenceMode(True)
 
@@ -31,8 +30,8 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         return self.model.info
 
     async def Health(self, request, context):
-        if self.model.device.type == "cuda":
-            torch.zeros((2, 2)).cuda()
+        if self.model.device.type == "hpu":
+            torch.zeros((2, 2)).to("hpu")
         return generate_pb2.HealthResponse()
 
     async def ServiceDiscovery(self, request, context):
@@ -55,29 +54,21 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         return generate_pb2.FilterBatchResponse(batch=filtered_batch.to_pb())
 
     async def Warmup(self, request, context):
-        if self.model.batch_type == IdeficsCausalLMBatch: #Hack, i would rather use kwargs in the `from_pb` call
-            batch = self.model.batch_type.from_pb(
-                request.batch, self.model.tokenizer, self.model.processor, self.model.dtype, self.model.device
-            )
-        else:
-            batch = self.model.batch_type.from_pb(
-                request.batch, self.model.tokenizer, self.model.dtype, self.model.device
-            )
-        max_supported_total_tokens = self.model.warmup(batch)
+        # batch = self.model.batch_type.from_pb(
+        #     request.batch, self.model.tokenizer, self.model.dtype, self.model.device
+        # )
+        # max_supported_total_tokens = self.model.warmup(batch)
 
-        return generate_pb2.WarmupResponse(
-            max_supported_total_tokens=max_supported_total_tokens
-        )
+        # return generate_pb2.WarmupResponse(
+        #     max_supported_total_tokens=max_supported_total_tokens
+        # )
+        logger.warning("Warmup is not enabled on HPU.")
+        return generate_pb2.WarmupResponse()
 
     async def Prefill(self, request, context):
-        if self.model.batch_type == IdeficsCausalLMBatch: #Hack, i would rather use kwargs in the `from_pb` call
-            batch = self.model.batch_type.from_pb(
-                request.batch, self.model.tokenizer, self.model.processor, self.model.dtype, self.model.device
-            )
-        else:
-            batch = self.model.batch_type.from_pb(
-                request.batch, self.model.tokenizer, self.model.dtype, self.model.device
-            )
+        batch = self.model.batch_type.from_pb(
+            request.batch, self.model.tokenizer, self.model.dtype, self.model.device, self.model.is_optimized_for_gaudi
+        )
 
         generations, next_batch = self.model.generate_token(batch)
         self.cache.set(next_batch)
@@ -118,53 +109,23 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
 def serve(
     model_id: str,
     revision: Optional[str],
-    sharded: bool,
-    quantize: Optional[str],
     dtype: Optional[str],
-    trust_remote_code: bool,
     uds_path: Path,
 ):
     async def serve_inner(
         model_id: str,
         revision: Optional[str],
-        sharded: bool = False,
-        quantize: Optional[str] = None,
         dtype: Optional[str] = None,
-        trust_remote_code: bool = False,
     ):
         unix_socket_template = "unix://{}-{}"
-        if sharded:
-            server_urls = [
-                unix_socket_template.format(uds_path, rank)
-                for rank in range(int(os.environ["WORLD_SIZE"]))
-            ]
-            local_url = server_urls[int(os.environ["RANK"])]
-        else:
-            local_url = unix_socket_template.format(uds_path, 0)
-            server_urls = [local_url]
+        local_url = unix_socket_template.format(uds_path, 0)
+        server_urls = [local_url]
 
         try:
-            model = get_model(
-                model_id, revision, sharded, quantize, dtype, trust_remote_code
-            )
+            model = get_model(model_id, revision, dtype)
         except Exception:
             logger.exception("Error when initializing model")
             raise
-
-        if quantize == "gptq":
-            try:
-                # When using GPTQ, Exllama kernels need some global kernels
-                # For which we have the finale shapes only after the model has loaded
-                # This will allocate those buffers.
-                from text_generation_server.utils.gptq.exllama import (
-                    create_exllama_buffers,
-                    set_device,
-                )
-
-                set_device(model.device)
-                create_exllama_buffers()
-            except ImportError:
-                pass
 
         server = aio.server(
             interceptors=[
@@ -192,6 +153,4 @@ def serve(
             logger.info("Signal received. Shutting down")
             await server.stop(0)
 
-    asyncio.run(
-        serve_inner(model_id, revision, sharded, quantize, dtype, trust_remote_code)
-    )
+    asyncio.run(serve_inner(model_id, revision, dtype))

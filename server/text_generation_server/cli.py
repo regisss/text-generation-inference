@@ -74,13 +74,7 @@ def serve(
     # Downgrade enum into str for easier management later on
     quantize = None if quantize is None else quantize.value
     dtype = None if dtype is None else dtype.value
-    if dtype is not None and quantize is not None:
-        raise RuntimeError(
-            "Only 1 can be set between `dtype` and `quantize`, as they both decide how goes the final model."
-        )
-    server.serve(
-        model_id, revision, sharded, quantize, dtype, trust_remote_code, uds_path
-    )
+    server.serve(model_id, revision, dtype, uds_path)
 
 
 @app.command()

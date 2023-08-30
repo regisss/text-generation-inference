@@ -1,5 +1,6 @@
 import math
 import torch
+import habana_frameworks.torch.core as htcore
 
 from functools import lru_cache
 from typing import Optional, List, Dict, Union
@@ -36,32 +37,31 @@ class StaticWarper:
         if typical_p is not None and typical_p < 1.0:
             self.warpers.append(TypicalLogitsWarper(mass=typical_p))
 
-        self.cuda_graph = None
+        self.hpu_graph = None
         self.static_scores = None
         self.static_warped_scores = None
         self.static_next_logprob = None
 
     def __call__(self, scores):
-        if torch.cuda.is_available():
-            if self.cuda_graph is None:
-                self.static_scores = scores
-                self.cuda_graph = torch.cuda.CUDAGraph()
+        if self.hpu_graph is None:
+            self.static_scores = scores
+            self.hpu_graph = htcore.hpu.HPUGraph()
 
-                with torch.cuda.graph(self.cuda_graph, pool=mempool):
-                    local_scores = self.static_scores
-                    for warper in self.warpers:
-                        local_scores = warper(None, local_scores)
+            with htcore.hpu.graph(self.hpu_graph):
+                local_scores = self.static_scores
+                for warper in self.warpers:
+                    local_scores = warper(None, local_scores)
 
-                    self.static_warped_scores = local_scores
-                    # Compute logprobs
-                    self.static_next_logprob = torch.log_softmax(
-                        self.static_warped_scores, -1
-                    )
+                self.static_warped_scores = local_scores
+                # Compute logprobs
+                self.static_next_logprob = torch.log_softmax(
+                    self.static_warped_scores, -1
+                )
 
-            self.static_scores.copy_(scores)
-            self.cuda_graph.replay()
+        self.static_scores.copy_(scores)
+        self.hpu_graph.replay()
 
-            return self.static_warped_scores, self.static_next_logprob
+        return self.static_warped_scores, self.static_next_logprob
 
         # CPU branch
         for warper in self.warpers:
